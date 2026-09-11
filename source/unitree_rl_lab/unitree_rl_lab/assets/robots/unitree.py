@@ -718,3 +718,158 @@ for a in UNITREE_G1_29DOF_MIMIC_CFG.actuators.values():
     for n in names:
         if n in e and n in s and s[n]:
             UNITREE_G1_29DOF_MIMIC_ACTION_SCALE[n] = 0.25 * e[n] / s[n]
+
+
+# USD asset: unitree_model/H2/H2_dae.usd (this repo).
+# init_state pos/joint_pos: unitree_rl_mjlab/src/assets/robots/unitree_h2/h2_constants.py (HOME_KEYFRAME).
+# actuators: effort_limit_sim/velocity_limit_sim are real hardware limits from
+#   github.com/unitreerobotics/unitree_ros, robots/h2_description/H2.urdf (<limit> tags per joint) -
+#   the URDF has no stiffness/damping, so those come from
+#   unitree_rl_mjlab/src/assets/robots/unitree_h2/h2_constants.py (H2_ACTUATOR_* PD gains) instead.
+# joint_sdk_names: order = real SDK motor index, from github.com/unitreerobotics/unitree_sdk2,
+#   example/h2/low_level/h2_ankle_swing_example.cpp (`enum H2JointIndex`, H2_NUM_MOTOR = 31).
+UNITREE_H2_CFG = UnitreeArticulationCfg(
+    # spawn=UnitreeUrdfFileCfg(
+    #     asset_path=f"{UNITREE_ROS_DIR}/robots/h2_description/H2.urdf",
+    # ),
+    spawn=UnitreeUsdFileCfg(
+        usd_path=f"{UNITREE_MODEL_DIR}/H2/H2_dae.usd",
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 1.03),
+        joint_pos={
+            ".*_hip_pitch_joint": -0.25,
+            ".*_knee_joint": 0.5,
+            ".*_ankle_pitch_joint": -0.25,
+            ".*_shoulder_pitch_joint": 0.35,
+            ".*_elbow_joint": 0.87,
+            "left_shoulder_roll_joint": 0.18,
+            "right_shoulder_roll_joint": -0.18,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    actuators={
+        "legs": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_pitch_.*", ".*_hip_roll_.*", ".*_hip_yaw_.*", ".*_knee_.*"],
+            effort_limit_sim=360.0,
+            velocity_limit_sim=20.0,
+            stiffness=200.0,
+            damping=4.0,
+            armature=0.01,
+        ),
+        "ankle_roll": ImplicitActuatorCfg(
+            joint_names_expr=[".*_ankle_roll_.*"],
+            effort_limit_sim=19.0,
+            velocity_limit_sim=100.7,
+            stiffness=40.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+        "ankle_pitch": ImplicitActuatorCfg(
+            joint_names_expr=[".*_ankle_pitch_.*"],
+            effort_limit_sim=66.88,
+            velocity_limit_sim=28.61,
+            stiffness=40.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+        # H2.urdf gives waist_yaw a lower effort limit (120) than waist_roll/waist_pitch (180); mjlab's
+        # H2_ACTUATOR_WAIST applies one PD gain (150/3.0) across all three, kept as-is here.
+        "waist": ImplicitActuatorCfg(
+            joint_names_expr=["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"],
+            effort_limit_sim={
+                "waist_yaw_joint": 120.0,
+                "waist_roll_joint": 180.0,
+                "waist_pitch_joint": 180.0,
+            },
+            velocity_limit_sim=28.375,
+            stiffness=150.0,
+            damping=3.0,
+            armature=0.01,
+        ),
+        # H2.urdf gives shoulder_pitch a higher effort limit (130) than the other 4 joints here (60);
+        # mjlab's H2_ACTUATOR_ARM applies one PD gain (40/2.0) across all 5, kept as-is here.
+        "arms": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_shoulder_pitch_.*",
+                ".*_shoulder_roll_.*",
+                ".*_shoulder_yaw_.*",
+                ".*_elbow_.*",
+                ".*_wrist_roll_.*",
+            ],
+            effort_limit_sim={
+                ".*_shoulder_pitch_.*": 130.0,
+                ".*_shoulder_roll_.*": 60.0,
+                ".*_shoulder_yaw_.*": 60.0,
+                ".*_elbow_.*": 60.0,
+                ".*_wrist_roll_.*": 60.0,
+            },
+            velocity_limit_sim={
+                ".*_shoulder_pitch_.*": 21.9,
+                ".*_shoulder_roll_.*": 18.7,
+                ".*_shoulder_yaw_.*": 18.7,
+                ".*_elbow_.*": 18.7,
+                ".*_wrist_roll_.*": 18.7,
+            },
+            stiffness=40.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+        "wrist_pitch_yaw": ImplicitActuatorCfg(
+            joint_names_expr=[".*_wrist_pitch_.*", ".*_wrist_yaw_.*"],
+            effort_limit_sim=10.0,
+            velocity_limit_sim=37.7,
+            stiffness=20.0,
+            damping=1.0,
+            armature=0.01,
+        ),
+        # Real hardware has head_pitch/head_yaw (SDK indices 29-30) but neither
+        # unitree_rl_mjlab/src/assets/robots/unitree_h2/h2_constants.py (H2_ARTICULATION) nor its h2.xml MJCF
+        # model the head at all - there is no PD gain to port. effort/velocity limits below are real
+        # (H2.urdf), but stiffness/damping are an UNVERIFIED GUESS (picked in the same range as the wrist
+        # gains, just to hold the head still instead of leaving it a free joint) - confirm/tune before
+        # relying on this, or drop the head from JointPositionActionCfg's ".*" match in velocity_env_cfg.py
+        # if you'd rather match mjlab and not actuate it at all.
+        "head": ImplicitActuatorCfg(
+            joint_names_expr=["head_pitch_joint", "head_yaw_joint"],
+            effort_limit_sim=50.0,
+            velocity_limit_sim=10.0,
+            stiffness=20.0,
+            damping=1.0,
+            armature=0.01,
+        ),
+    },
+    joint_sdk_names=[
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_roll_joint",
+        "left_ankle_pitch_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_roll_joint",
+        "right_ankle_pitch_joint",
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+        "head_pitch_joint",
+        "head_yaw_joint",
+    ],
+)
