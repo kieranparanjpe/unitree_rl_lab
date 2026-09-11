@@ -72,10 +72,14 @@ case "$1" in
         ;;
     -p|--play)
         shift
+        # headless mode still probes DISPLAY for a GL context, which segfaults
+        # when it collides with an active desktop X session on this machine.
+        [[ " $* " == *" --headless "* ]] && unset DISPLAY
         ${python_exe} ${UNITREE_RL_LAB_PATH}/scripts/rsl_rl/play.py "$@"
         ;;
     -t|--train)
         shift
+        unset DISPLAY  # always headless (see below), so always unset
         ${python_exe} ${UNITREE_RL_LAB_PATH}/scripts/rsl_rl/train.py --headless "$@"
         ;;
     *) # unknown option
