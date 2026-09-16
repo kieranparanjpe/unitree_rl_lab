@@ -155,11 +155,26 @@ class EventCfg:
     )
 
     # interval
+    # Six-axis push, matching unitree_rl_mjlab/src/tasks/velocity/velocity_env_cfg.py's shared
+    # "push_robot" term, which mjlab's H2 trains with (its config only pops the term under
+    # `if play:`, i.e. for evaluation). G1 - and so H2 - pushed on x/y only, which
+    # h2-isaac-training-notes.md identifies as one of the few places Isaac's randomization is
+    # genuinely thinner than mjlab's. Interval widened to (5.0, 6.0) to match as well, so the
+    # pushes aren't phase-locked to a fixed 5 s period.
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(5.0, 5.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        interval_range_s=(5.0, 6.0),
+        params={
+            "velocity_range": {
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (-0.4, 0.4),
+                "roll": (-0.52, 0.52),
+                "pitch": (-0.52, 0.52),
+                "yaw": (-0.78, 0.78),
+            }
+        },
     )
 
 
@@ -177,8 +192,13 @@ class CommandsCfg:
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
         ),
+        # ang_vel_z widened from G1's +-0.2 to h1/velocity_env_cfg.py's +-0.5. The deployed H2
+        # policy tracks yaw at roughly 0.03 rad/s of 0.2 commanded, and a policy cannot learn to
+        # turn well inside a range the curriculum barely ever samples. This is also the deploy
+        # contract: deploy.yaml exports these as the clamp policy_node applies to /cmd_vel, so a
+        # checkpoint trained with this accepts yaw commands the current one silently clips.
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
+            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5)
         ),
     )
 
@@ -210,8 +230,15 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
         last_action = ObsTerm(func=mdp.last_action)
+        # From h1/velocity_env_cfg.py; G1 and therefore H2 had no phase signal at all, which
+        # h2-isaac-training-notes.md identifies as the main reason mjlab's H2 gaits look better.
+        # period MUST match the `gait` reward's period below (0.8 for H2, where H1 uses 0.6) -
+        # the reward rewards contact at a phase the policy can only see through this term.
+        gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
 
         def __post_init__(self):
+            # Kept at 5, unlike H1 which comments this out and runs single-frame. Dropping it
+            # would be a separate, much larger change to the observation contract.
             self.history_length = 5
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -230,6 +257,7 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
         last_action = ObsTerm(func=mdp.last_action)
+        gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
 
         def __post_init__(self):
             self.history_length = 5
@@ -256,7 +284,9 @@ class RewardsCfg:
 
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    # weight -0.5, from h1/velocity_env_cfg.py, not G1's -0.05. H2 inherited the G1 number along
+    # with the rest of this file; H1 is the more developed humanoid config of the two.
+    base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.5)
     joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-0.001)
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
@@ -296,7 +326,10 @@ class RewardsCfg:
     )
 
     # -- robot
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
+    # weight -1.0, from h1/velocity_env_cfg.py. Note this *relaxes* G1's -5.0 rather than
+    # tightening it - H1 leans on base_contact and the stronger base_angular_velocity penalty to
+    # keep the torso upright instead of penalising tilt this hard directly.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
     # target_height: NOT sourced from unitree_rl_mjlab - its H2 task uses a "pose" tracking reward instead
     # of an explicit base-height term, so there's no equivalent number to port. Estimated here from H2's
     # init pos z (1.03) using the same target/spawn ratio as G1 (0.78/0.8) - needs tuning once H2 is
@@ -328,14 +361,27 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch.*"),
         },
     )
+    # weight 20.0, from h1/velocity_env_cfg.py, not G1's 1.0. target_height is left at H2's own
+    # 0.1 rather than H1's 0.15 - that is a foot-swing height, so it belongs to the robot's
+    # geometry, unlike the weight.
     feet_clearance = RewTerm(
         func=mdp.foot_clearance_reward,
-        weight=1.0,
+        weight=20.0,
         params={
             "std": 0.05,
             "tanh_mult": 2.0,
             "target_height": 0.1,
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_pitch.*"),
+        },
+    )
+    # From h1/velocity_env_cfg.py; G1 and therefore H2 had no impact penalty at all. Keeps the
+    # feet from being slammed into the ground to satisfy the gait and clearance terms.
+    feet_contact_forces = RewTerm(
+        func=mdp.contact_forces,
+        weight=-0.0002,
+        params={
+            "threshold": 500,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch.*"),
         },
     )
 
@@ -359,6 +405,17 @@ class TerminationsCfg:
     # enough to just catch falls; not meant to be a precise threshold.
     base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
     bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
+    # From h1/velocity_env_cfg.py; G1 and therefore H2 had no torso-contact termination. Ends
+    # the episode as soon as the torso touches anything, instead of letting the policy learn to
+    # crawl or lean on the ground. H1 drops bad_orientation once it has this - both are kept
+    # here, since H2's limit_angle=0.8 also catches tilt that never reaches a contact.
+    base_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["torso_link"]),
+            "threshold": 1.0,
+        },
+    )
 
 
 @configclass
