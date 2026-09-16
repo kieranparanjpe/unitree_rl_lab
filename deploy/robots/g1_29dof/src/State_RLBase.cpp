@@ -27,6 +27,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         // TODO: smooth and limit the velocity commands
         cmd = key_commands[key];
     }
+    env->command = cmd;  // so gait_phase can gate on it
     return cmd;
 }
 

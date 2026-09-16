@@ -184,21 +184,25 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformLevelVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.02,
+        # (3, 8) s and 0.05, from unitree_rl_mjlab. Resampling every 10 s gave roughly two
+        # commands per 20 s episode, so transitions between commands were barely trained.
+        resampling_time_range=(3.0, 8.0),
+        rel_standing_envs=0.05,
         rel_heading_envs=1.0,
         heading_command=False,
         debug_vis=True,
+        # ang_vel_z is set to its full range here rather than in limit_ranges, because NOTHING
+        # advances it: the only registered command curriculum is lin_vel_cmd_levels, which
+        # touches lin_vel_x and lin_vel_y only (locomotion/mdp/curriculums.py:26-35). There is an
+        # ang_vel_cmd_levels beside it that would, but no robot registers it. Leaving yaw to
+        # limit_ranges meant training never sampled beyond +-0.1 while deploy.yaml advertised
+        # +-0.5 - export_deploy_cfg exports limit_ranges - so policy_node fed the policy yaw
+        # commands 5x outside anything it had seen. +-1.0 is unitree_rl_mjlab's step-0 stage.
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
+            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)
         ),
-        # ang_vel_z widened from G1's +-0.2 to h1/velocity_env_cfg.py's +-0.5. The deployed H2
-        # policy tracks yaw at roughly 0.03 rad/s of 0.2 commanded, and a policy cannot learn to
-        # turn well inside a range the curriculum barely ever samples. This is also the deploy
-        # contract: deploy.yaml exports these as the clamp policy_node applies to /cmd_vel, so a
-        # checkpoint trained with this accepts yaw commands the current one silently clips.
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5)
+            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-1.0, 1.0)
         ),
     )
 
@@ -234,7 +238,13 @@ class ObservationsCfg:
         # h2-isaac-training-notes.md identifies as the main reason mjlab's H2 gaits look better.
         # period MUST match the `gait` reward's period below (0.8 for H2, where H1 uses 0.6) -
         # the reward rewards contact at a phase the policy can only see through this term.
-        gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
+        # command_name gates the clock off below 0.1, as unitree_rl_mjlab's `phase` term does.
+        # Ungated it hands the policy a periodic input at zero command with no reward term
+        # opposing a periodic output, and the robot marches in place instead of standing.
+        gait_phase = ObsTerm(
+            func=mdp.gait_phase,
+            params={"period": 0.8, "command_name": "base_velocity", "command_threshold": 0.1},
+        )
 
         def __post_init__(self):
             # Kept at 5, unlike H1 which comments this out and runs single-frame. Dropping it
@@ -257,7 +267,10 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
         last_action = ObsTerm(func=mdp.last_action)
-        gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
+        gait_phase = ObsTerm(
+            func=mdp.gait_phase,
+            params={"period": 0.8, "command_name": "base_velocity", "command_threshold": 0.1},
+        )
 
         def __post_init__(self):
             self.history_length = 5
@@ -277,7 +290,9 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        # weight and std from unitree_rl_mjlab's track_angular_velocity: double the weight and a
+        # looser std than G1's, so yaw tracking can outbid the foot terms that oppose turning.
+        func=mdp.track_ang_vel_z_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.5)}
     )
 
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
@@ -354,23 +369,25 @@ class RewardsCfg:
         },
     )
     feet_slide = RewTerm(
-        func=mdp.feet_slide,
-        weight=-0.2,
+        func=mdp.feet_slide_when_moving,
+        weight=-0.25,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_pitch.*"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch.*"),
+            "command_name": "base_velocity",
         },
     )
-    # weight 20.0, from h1/velocity_env_cfg.py, not G1's 1.0. target_height is left at H2's own
-    # 0.1 rather than H1's 0.15 - that is a foot-swing height, so it belongs to the robot's
-    # geometry, unlike the weight.
+    # unitree_rl_mjlab's shape, not H1's: a linear penalty on horizontal foot motion away from
+    # target_height, gated on the command. H1's exp() form is a bonus that peaks when the feet
+    # are still, so at H1's weight of 20 it paid ~20/step for standing and cost more to turn in
+    # place than track_ang_vel_z could pay back. target_height stays 0.1 - H2's ankle_pitch link
+    # sits at world z ~= 0.045 standing (H2.urdf), so 0.1 is a ~5.5 cm swing.
     feet_clearance = RewTerm(
-        func=mdp.foot_clearance_reward,
-        weight=20.0,
+        func=mdp.feet_clearance_penalty,
+        weight=-1.0,
         params={
-            "std": 0.05,
-            "tanh_mult": 2.0,
             "target_height": 0.1,
+            "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_pitch.*"),
         },
     )

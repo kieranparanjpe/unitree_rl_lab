@@ -75,6 +75,13 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+
+    // Last velocity command fed to the policy, as [lin_x, lin_y, ang_z]. Written by whichever
+    // `velocity_commands` observation term is registered - the stock joystick one, the keyboard
+    // example, or an application's override - so that other terms can read it. `gait_phase`
+    // needs it to gate itself the way training does; an observation term is handed only
+    // (env, params) and has no other route to the command.
+    std::vector<float> command = {0.0f, 0.0f, 0.0f};
 };
 
 };

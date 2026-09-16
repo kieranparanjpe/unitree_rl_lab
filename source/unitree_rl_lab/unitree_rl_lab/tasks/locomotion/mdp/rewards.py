@@ -10,6 +10,7 @@ except ImportError:
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -126,6 +127,48 @@ def foot_clearance_reward(
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
     reward = foot_z_target_error * foot_velocity_tanh
     return torch.exp(-torch.sum(reward, dim=1) / std)
+
+
+def feet_clearance_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    command_name: str | None = None,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize horizontal foot motion away from the target clearance height.
+
+    Ported from unitree_rl_mjlab's `feet_clearance`. Unlike `foot_clearance_reward` above, which
+    is `exp(-error)` and therefore a bounded *bonus* that peaks when the feet are still, this is
+    a linear cost that is exactly zero while standing. The bonus form cannot be given a large
+    weight without paying the policy for not moving its feet - at weight 20 it outbid
+    `track_ang_vel_z`, which is why turning in place stopped being worth doing.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    foot_vel_xy = torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2)
+    cost = torch.sum(torch.abs(foot_z - target_height) * foot_vel_xy, dim=1)
+
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        cost *= cmd_norm > command_threshold
+    return cost
+
+
+def feet_slide_when_moving(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """`feet_slide`, gated off while the command is near zero.
+
+    Wraps rather than reimplements, so the definition of "sliding" stays upstream's.
+    """
+    reward = feet_slide(env, sensor_cfg=sensor_cfg, asset_cfg=asset_cfg)
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    return reward * (cmd_norm > command_threshold)
 
 
 def feet_too_near(
