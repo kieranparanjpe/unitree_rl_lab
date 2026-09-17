@@ -295,7 +295,30 @@ class RewardsCfg:
         func=mdp.track_ang_vel_z_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.5)}
     )
 
-    alive = RewTerm(func=mdp.is_alive, weight=0.15)
+    # Survival economy. Every reward here is scaled by step_dt (0.02), so these are per-second
+    # rates: alive pays +0.1/step and a full 20 s episode is worth +100, while a termination
+    # costs -4 once.
+    #
+    # This pairing is NOT optional, and getting it wrong killed run yhyw3t6n. That run had
+    # alive=0.15 with no termination penalty, and collapsed to a 3-step episode with 100%
+    # base_contact termination inside ~1200 iterations - mean_reward went UP (-1.32 -> +0.026)
+    # as mean_episode_length went DOWN (9.57 -> 3), i.e. the policy learned that ending the
+    # episode immediately beat playing it. The cause was removing feet_clearance's +20 exp
+    # bonus: that term peaked when the feet were still, so it was silently paying ~+20/step
+    # (~+400/episode) for merely existing, and it was the only thing making survival
+    # worthwhile. Measured cost of exploring in that run was -0.138/step, against alive's
+    # +0.003/step.
+    #
+    # alive=5.0 restores that dense positive at a sane magnitude - +100/episode for surviving
+    # against ~+50 for tracking perfectly, where the old config's accidental subsidy was +400
+    # against the same +50. Being a constant it cannot distort *how* the robot moves, unlike
+    # the foot-velocity-dependent term it replaces. unitree_rl_mjlab gets this leg from
+    # variable_posture (+1.0/step for holding the default pose) instead, which also shapes the
+    # stance; porting that is the better long-term answer - see HANDOFF.md.
+    alive = RewTerm(func=mdp.is_alive, weight=5.0)
+    # -200 is unitree_rl_mjlab's value. dt-scaled that is -4 per termination, against ~+150 for
+    # a full successful episode - the same ratio mjlab runs at.
+    is_terminated = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
@@ -421,18 +444,24 @@ class TerminationsCfg:
     # minimum_height: copied from G1's value (0.2) - no H2-specific number found in mjlab either. Loose
     # enough to just catch falls; not meant to be a precise threshold.
     base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
-    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
-    # From h1/velocity_env_cfg.py; G1 and therefore H2 had no torso-contact termination. Ends
-    # the episode as soon as the torso touches anything, instead of letting the policy learn to
-    # crawl or lean on the ground. H1 drops bad_orientation once it has this - both are kept
-    # here, since H2's limit_angle=0.8 also catches tilt that never reaches a contact.
-    base_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["torso_link"]),
-            "threshold": 1.0,
-        },
-    )
+    # 70 degrees, from unitree_rl_mjlab. Was 0.8 rad (45.8 deg), which ends the episode on a
+    # lean a humanoid can still recover from. That is survivable when termination is free, but
+    # not once is_terminated charges -4 for it: frequent AND expensive terminations make the
+    # policy refuse to move rather than learn to catch itself.
+    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": math.radians(70.0)})
+
+    # DELIBERATELY ABSENT: a torso-contact termination (h1 has one; unitree_rl_mjlab has none).
+    # It was added here from h1, and run yhyw3t6n terminated on it 100% of the time at exactly
+    # 3 steps (0.06 s) - far too fast to have fallen, since free-fall from 1.03 m takes ~450 ms.
+    # The scene's contact_forces sensor spans Robot/.* with an empty filter_prim_paths_expr and
+    # the articulation has enabled_self_collisions=True, so illegal_contact on torso_link fires
+    # on SELF-contact: an arm (velocity limit ~19 rad/s) reaching its own torso ends the episode
+    # almost instantly. Episode_Reward/undesired_contacts pinned at exactly one body in contact,
+    # consistent with that.
+    #
+    # Restricting it to ground contact needs a filtered ContactSensor plus a termination reading
+    # force_matrix_w, which is machinery this repo has nowhere else. Matching mjlab's termination
+    # set is the cheaper correct answer; bad_orientation and base_height still catch falls.
 
 
 @configclass
