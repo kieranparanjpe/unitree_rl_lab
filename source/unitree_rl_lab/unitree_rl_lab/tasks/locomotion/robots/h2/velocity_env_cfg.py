@@ -189,7 +189,26 @@ class CommandsCfg:
         resampling_time_range=(3.0, 8.0),
         rel_standing_envs=0.05,
         rel_heading_envs=1.0,
-        heading_command=False,
+        # heading_command replaces the sampled ang_vel_z, every step, with
+        # clip(stiffness * wrap_to_pi(heading_target - heading_w), ang_vel_z range) - a P
+        # controller on the robot's own heading. Yaw stops being an independent random variable
+        # and becomes feedback, so any yaw a strafe induces immediately shows up as a corrective
+        # command the policy has to track. Without it yaw is pure feedforward and nothing ever
+        # tells the policy it drifted, which is why strafing curves.
+        #
+        # It also gives a better yaw profile than uniform sampling: a fresh target every 3-8 s
+        # means a large error, a big turn, then decay to zero as the turn completes, instead of
+        # a constant random rate held for the whole window.
+        #
+        # It does NOT buy heading holding at deploy - /cmd_vel supplies ang_vel_z directly and
+        # nothing observes heading - so the gain is straighter open-loop travel, not correction.
+        heading_command=True,
+        heading_control_stiffness=0.5,  # unitree_rl_mjlab's value; the field defaulted to 1.0
+        # Snap near-zero draws to exactly zero, matching mjlab. Equal to the command_threshold
+        # gait_phase, feet_gait, feet_clearance, feet_slide and pose all gate on, so a sampled
+        # command is either a clean stand or unambiguously a walk, never a creep just over the
+        # line. Opt-in per robot - the shared cfg defaults it off.
+        zero_command_threshold=0.1,
         debug_vis=True,
         # ang_vel_z is set to its full range here rather than in limit_ranges, because NOTHING
         # advances it: the only registered command curriculum is lin_vel_cmd_levels, which
@@ -198,11 +217,15 @@ class CommandsCfg:
         # limit_ranges meant training never sampled beyond +-0.1 while deploy.yaml advertised
         # +-0.5 - export_deploy_cfg exports limit_ranges - so policy_node fed the policy yaw
         # commands 5x outside anything it had seen. +-1.0 is unitree_rl_mjlab's step-0 stage.
+        # heading must be set on BOTH: the command term rejects heading_command=True with
+        # ranges.heading=None, and RobotPlayEnvCfg assigns limit_ranges onto ranges wholesale.
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)
+            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0),
+            heading=(-math.pi, math.pi),
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-1.0, 1.0)
+            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-1.0, 1.0),
+            heading=(-math.pi, math.pi),
         ),
     )
 
@@ -309,13 +332,22 @@ class RewardsCfg:
     # worthwhile. Measured cost of exploring in that run was -0.138/step, against alive's
     # +0.003/step.
     #
-    # alive=5.0 restores that dense positive at a sane magnitude - +100/episode for surviving
-    # against ~+50 for tracking perfectly, where the old config's accidental subsidy was +400
-    # against the same +50. Being a constant it cannot distort *how* the robot moves, unlike
-    # the foot-velocity-dependent term it replaces. unitree_rl_mjlab gets this leg from
-    # variable_posture (+1.0/step for holding the default pose) instead, which also shapes the
-    # stance; porting that is the better long-term answer - see HANDOFF.md.
-    alive = RewTerm(func=mdp.is_alive, weight=5.0)
+    # alive=1.0. It was briefly 5.0, sized to offset a -0.138/step exploration cost measured in
+    # yhyw3t6n - but that was the COLLAPSED run, where the robot was flailing, so the figure was
+    # roughly an order of magnitude too high for a healthy one. Run 3c6nxbca trained cleanly with
+    # 5.0 (full 1000-step episodes, 99.7% time_out) and still could not walk: alive came to +100
+    # of a +151 positive budget - 66% - against +17 for track_lin_vel_xy, so any change raising
+    # fall probability cost 100 x delta_p. The policy converged on the safest gait that still
+    # collected `gait` (+18.5, paid for stepping in rhythm whether or not the robot translates).
+    # Probing that checkpoint against 09-16 on identical observations showed it holding both hips
+    # extended by +0.10/+0.18 rad under a forward command where 09-16 sat at ~0, with smaller
+    # ankle push-off and larger knee swing: full-amplitude stepping, weight back, no propulsion.
+    #
+    # At 1.0 the budget is roughly alive +20, gait +18.5, tracking +32, penalties -38, which puts
+    # velocity tracking at ~46% of the positives instead of 21%. is_terminated below is what
+    # actually makes termination unattractive - unitree_rl_mjlab carries no alive term at all and
+    # relies on it alone - so alive only needs to be a modest dense positive, not a subsidy.
+    alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # -200 is unitree_rl_mjlab's value. dt-scaled that is -4 per termination, against ~+150 for
     # a full successful episode - the same ratio mjlab runs at.
     is_terminated = RewTerm(func=mdp.is_terminated, weight=-200.0)
@@ -331,43 +363,73 @@ class RewardsCfg:
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
-    joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
+    # unitree_rl_mjlab's `pose` term, replacing the three joint_deviation_l1 penalties that used
+    # to sit here (arms -0.1, waists -1, legs -1.0). Those apply one weight per joint group at
+    # every speed, so they penalise the knee for doing exactly what walking requires; this gives
+    # each joint its own TOLERANCE, widened by commanded speed. std tables copied verbatim from
+    # unitree_rl_mjlab/src/tasks/velocity/config/h2/env_cfgs.py, with head_* added - mjlab's H2
+    # model has no head joints, rl_lab's actuates both, and every joint must be covered or
+    # _resolve_joint_stds raises.
+    #
+    # Note waist_roll/waist_pitch stay at 0.1 in every regime: that is the term meant to hold the
+    # torso upright while the legs swing freely (hip_pitch/knee at 0.5).
+    pose = RewTerm(
+        func=mdp.variable_posture,
+        weight=1.0,
         params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    ".*_shoulder_.*_joint",
-                    ".*_elbow_joint",
-                    ".*_wrist_.*",
-                ],
-            )
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "command_name": "base_velocity",
+            "walking_threshold": 0.1,
+            "running_threshold": 1.5,
+            "std_standing": {".*": 0.05},
+            "std_walking": {
+                r".*hip_pitch.*": 0.5,
+                r".*hip_roll.*": 0.15,
+                r".*hip_yaw.*": 0.15,
+                r".*knee.*": 0.5,
+                r".*ankle_roll.*": 0.1,
+                r".*ankle_pitch.*": 0.15,
+                r".*waist_yaw.*": 0.15,
+                r".*waist_roll.*": 0.1,
+                r".*waist_pitch.*": 0.1,
+                r".*shoulder_pitch.*": 0.15,
+                r".*shoulder_roll.*": 0.1,
+                r".*shoulder_yaw.*": 0.1,
+                r".*elbow.*": 0.1,
+                r".*wrist.*": 0.1,
+                r".*head.*": 0.3,
+            },
+            "std_running": {
+                r".*hip_pitch.*": 0.5,
+                r".*hip_roll.*": 0.25,
+                r".*hip_yaw.*": 0.25,
+                r".*knee.*": 0.5,
+                r".*ankle_roll.*": 0.1,
+                r".*ankle_pitch.*": 0.25,
+                r".*waist_yaw.*": 0.25,
+                r".*waist_roll.*": 0.1,
+                r".*waist_pitch.*": 0.1,
+                r".*shoulder_pitch.*": 0.25,
+                r".*shoulder_roll.*": 0.1,
+                r".*shoulder_yaw.*": 0.1,
+                r".*elbow.*": 0.1,
+                r".*wrist.*": 0.1,
+                r".*head.*": 0.3,
+            },
         },
-    )
-    joint_deviation_waists = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-1,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    "waist.*",
-                ],
-            )
-        },
-    )
-    joint_deviation_legs = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint", ".*_hip_yaw_joint"])},
     )
 
     # -- robot
-    # weight -1.0, from h1/velocity_env_cfg.py. Note this *relaxes* G1's -5.0 rather than
-    # tightening it - H1 leans on base_contact and the stronger base_angular_velocity penalty to
-    # keep the torso upright instead of penalising tilt this hard directly.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    # Back to G1's -5.0. h1/velocity_env_cfg.py uses -1.0, and the tier-1 session copied that,
+    # but H1 only gets away with it because it leans on a torso-contact termination - which this
+    # config no longer has. At -1.0 run 3c6nxbca held a persistent ~5 degree root tilt
+    # (Episode_Reward/flat_orientation_l2 = -0.0079 => mean(g_x^2+g_y^2) = 0.0079) for 0.14% of
+    # its return: the lean was effectively free. At -5.0 the same tilt costs 0.79, still under 1%
+    # of return, so it adds gradient pressure without crowding out the tracking terms.
+    #
+    # Complements rather than duplicates `pose`: this penalises ROOT pitch/roll, `pose` penalises
+    # JOINT deviation. A lean can be built out of either.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
     # target_height: NOT sourced from unitree_rl_mjlab - its H2 task uses a "pose" tracking reward instead
     # of an explicit base-height term, so there's no equivalent number to port. Estimated here from H2's
     # init pos z (1.03) using the same target/spawn ratio as G1 (0.78/0.8) - needs tuning once H2 is

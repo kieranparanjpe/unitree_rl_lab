@@ -10,6 +10,7 @@ except ImportError:
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+from isaaclab.utils.string import resolve_matching_names
 from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide
 
 if TYPE_CHECKING:
@@ -246,6 +247,62 @@ def feet_gait(
 """
 Other rewards.
 """
+
+
+def _resolve_joint_stds(table: dict[str, float], joint_names: list[str], device) -> torch.Tensor:
+    """Expand a {name-pattern: std} table into a per-joint tensor, ordered like `joint_names`."""
+    stds = torch.full((len(joint_names),), float("nan"), device=device)
+    for pattern, value in table.items():
+        ids, _ = resolve_matching_names(pattern, joint_names)
+        stds[ids] = value
+    unmatched = [n for n, s in zip(joint_names, stds.tolist()) if s != s]
+    if unmatched:
+        raise ValueError(f"variable_posture: no std given for joints {unmatched}")
+    if bool((stds <= 0).any()):
+        raise ValueError("variable_posture: every std must be > 0 (it is divided by)")
+    return stds
+
+
+def variable_posture(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    std_standing: dict[str, float],
+    std_walking: dict[str, float],
+    std_running: dict[str, float],
+    walking_threshold: float = 0.1,
+    running_threshold: float = 1.5,
+) -> torch.Tensor:
+    """Reward holding the default pose, with a per-joint tolerance that widens with speed.
+
+    Ported from unitree_rl_mjlab's `variable_posture`. `exp(-mean((q - q_default)^2 / std^2))`,
+    where `std` is picked per joint from one of three tables according to the commanded speed
+    (`|lin| + |ang|`). std is a TOLERANCE, not a target: a small std says "this joint must stay
+    put", a large one says "this joint is allowed to move". That is what `joint_deviation_l1`
+    cannot express - one weight per joint group at every speed penalises the knee for doing
+    exactly what walking requires.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+
+    if not hasattr(env, "variable_posture_std_cache") or env.variable_posture_std_cache is None:
+        names = asset.data.joint_names
+        names = names[joint_ids] if isinstance(joint_ids, slice) else [names[i] for i in joint_ids]
+        env.variable_posture_std_cache = tuple(
+            _resolve_joint_stds(t, names, env.device) for t in (std_standing, std_walking, std_running)
+        )
+    standing, walking, running = env.variable_posture_std_cache
+
+    command = env.command_manager.get_command(command_name)
+    speed = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    std = torch.where(
+        (speed < walking_threshold).unsqueeze(1),
+        standing,
+        torch.where((speed < running_threshold).unsqueeze(1), walking, running),
+    )
+
+    error = asset.data.joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
+    return torch.exp(-torch.mean(torch.square(error) / torch.square(std), dim=1))
 
 
 def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]) -> torch.Tensor:
