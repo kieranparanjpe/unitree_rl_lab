@@ -11,10 +11,19 @@ from isaaclab.utils.string import resolve_matching_names
 def format_value(x):
     if isinstance(x, float):
         return float(f"{x:.3g}")
-    elif isinstance(x, list):
+    elif isinstance(x, (list, tuple)):
+        # tuple -> list matters: yaml.dump tags a tuple !!python/tuple, which every consumer of
+        # this file rejects (they all use yaml.safe_load). It stayed hidden while the only tuple
+        # fields were the command ranges, which are converted by hand below, and `heading`, which
+        # was None until heading_command was enabled.
         return [format_value(i) for i in x]
     elif isinstance(x, dict):
         return {k: format_value(v) for k, v in x.items()}
+    elif isinstance(x, np.generic):
+        # np.int64 is not a Python int (np.float64 *is* a float, so it is caught above), and
+        # safe_dump refuses anything it cannot represent. joint_ids_map and an action term's
+        # joint_ids are the two fields that reach here without a .tolist() upstream.
+        return format_value(x.item())
     else:
         return x
 
@@ -114,4 +123,9 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
         cfg = class_to_dict(cfg)
     cfg = format_value(cfg)
     with open(filename, "w") as f:
-        yaml.dump(cfg, f, default_flow_style=None, sort_keys=False)
+        # safe_dump, not dump: every consumer of this file reads it with yaml.safe_load, so
+        # anything plain dump is willing to tag (!!python/tuple, numpy scalars, enums) produces a
+        # manifest that only fails hours later at deploy. safe_dump refuses at export instead,
+        # where the traceback points at the field. format_value above normalises the types that
+        # legitimately occur, so this should never fire - if it does, that is a real find.
+        yaml.safe_dump(cfg, f, default_flow_style=None, sort_keys=False)
