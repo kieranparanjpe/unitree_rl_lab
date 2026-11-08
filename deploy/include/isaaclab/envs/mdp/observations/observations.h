@@ -137,14 +137,17 @@ REGISTER_OBSERVATION(gait_phase)
     float period = params["period"].as<float>();
     float delta_phase = env->step_dt * (1.0f / period);
 
+    std::vector<float> obs(2);
+    obs[0] = std::sin(env->global_phase * 2 * M_PI);
+    obs[1] = std::cos(env->global_phase * 2 * M_PI);
+
+    // Advance AFTER reading, so the call made by ObservationManager::reset() sees phase 0 and the
+    // k-th step() after it sees k * delta - Python's episode_length_buf * step_dt exactly.
+    // Advancing first ran one step (step_dt / period) ahead of training.
     // Advances even while gated, matching Python's episode_length_buf: freezing it would make
     // the phase resume from a stale offset when the command comes back.
     env->global_phase += delta_phase;
     env->global_phase = std::fmod(env->global_phase, 1.0f);
-
-    std::vector<float> obs(2);
-    obs[0] = std::sin(env->global_phase * 2 * M_PI);
-    obs[1] = std::cos(env->global_phase * 2 * M_PI);
 
     if (params["command_name"].IsDefined() && !params["command_name"].IsNull()) {
         const float threshold = params["command_threshold"].as<float>(0.1f);
