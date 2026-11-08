@@ -27,10 +27,12 @@ class UniformLevelVelocityCommand(UniformVelocityCommand):
     standing regime a clean partition rather than something `rel_standing_envs` reaches only by
     chance.
 
-    This applies at resample only, exactly as mjlab does. With `heading_command` on, the yaw
-    component is still overwritten every step by the heading controller, so a command can drift
-    back across the threshold as a turn settles - that is true of mjlab too and is not what this
-    fixes.
+    Unlike mjlab, a snapped robot is also put in standing mode until its next draw. Without that,
+    the heading controller rewrites a heading-mode robot's yaw on the very next step, so the snap
+    only zeroes x and y and the robot is told to turn in place instead of stand.
+
+    An unsnapped heading-mode command can still drift back across the threshold as its turn
+    settles - that is true of mjlab too and is not what this fixes.
     """
 
     cfg: UniformLevelVelocityCommandCfg
@@ -39,6 +41,7 @@ class UniformLevelVelocityCommand(UniformVelocityCommand):
         super()._resample_command(env_ids)
         keep = torch.norm(self.vel_command_b[env_ids], dim=1) > self.cfg.zero_command_threshold
         self.vel_command_b[env_ids] *= keep.unsqueeze(1)
+        self.is_standing_env[env_ids] |= ~keep
 
 
 @configclass
@@ -50,8 +53,9 @@ class UniformLevelVelocityCommandCfg(UniformVelocityCommandCfg):
     into deploy.yaml as the clamp policy_node applies to /cmd_vel."""
 
     zero_command_threshold: float = 0.0
-    """Draws whose 3-norm is at or below this are snapped to exactly zero. Set it equal to the
-    command_threshold the gait/foot/pose reward terms gate on - 0.1 for H2.
+    """Draws whose 3-norm is at or below this are snapped to exactly zero, and the robot stands
+    until its next draw. Set it equal to the command_threshold the gait/foot/pose reward terms
+    gate on - 0.1 for H2.
 
     Defaults to 0.0 (no-op) because g1, go2 and h1 share this cfg class and none of them asked
     for the behaviour change; opt in per robot."""
