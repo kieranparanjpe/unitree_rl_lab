@@ -37,6 +37,10 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     ./unitree_rl_lab.sh -i
     # restart your shell to activate the environment changes.
     ```
+
+    > **misc-desk only:** on misc-desk the Isaac Lab conda env is named `unitree_rl_lab`, not
+    > `env_isaaclab`, so use `conda activate unitree_rl_lab` there. Other machines use whatever
+    > name their Isaac Lab env was created with.
 - Download unitree robot description files
 
   *Method 1: Using USD Files*

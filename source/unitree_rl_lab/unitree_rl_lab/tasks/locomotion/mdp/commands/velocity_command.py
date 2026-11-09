@@ -10,38 +10,38 @@ from isaaclab.utils import configclass
 # The snap below works by overriding a private method. If upstream ever renames it the override
 # would simply never be called - a silent revert to un-snapped commands, which is exactly the
 # kind of failure that costs a training run. Fail at import instead.
-if not hasattr(UniformVelocityCommand, "_resample_command"):
+if not hasattr(UniformVelocityCommand, "_update_command"):
     raise ImportError(
-        "UniformVelocityCommand._resample_command is gone; UniformLevelVelocityCommand's "
+        "UniformVelocityCommand._update_command is gone; UniformLevelVelocityCommand's "
         "near-zero snap needs rewriting against the new API."
     )
 
 
 class UniformLevelVelocityCommand(UniformVelocityCommand):
-    """Adds unitree_rl_mjlab's near-zero snap to the stock uniform velocity command.
+    """Adds a near-zero snap to the stock uniform velocity command.
 
-    Upstream samples each axis independently, so a draw can land just above the 0.1 that
+    Upstream samples each axis independently, so a command can land just above the 0.1 that
     `gait_phase`, `feet_gait`, `feet_clearance`, `feet_slide` and `pose` all gate on - asking
-    the robot to creep instead of either standing or walking. mjlab zeroes any draw whose norm
-    falls at or below that (`unitree_rl_mjlab/.../mdp/velocity_command.py:77`), which makes the
-    standing regime a clean partition rather than something `rel_standing_envs` reaches only by
-    chance.
+    the robot to creep instead of either standing or walking. Any command whose norm is at or
+    below that is set to exactly zero, which makes the standing regime a clean partition rather
+    than something `rel_standing_envs` reaches only by chance.
 
-    Unlike mjlab, a snapped robot is also put in standing mode until its next draw. Without that,
-    the heading controller rewrites a heading-mode robot's yaw on the very next step, so the snap
-    only zeroes x and y and the robot is told to turn in place instead of stand.
+    The snap runs every step, after the heading controller has set that step's turn rate, so it
+    judges the command the robot is actually given, the same way those gates do. A heading-mode
+    robot with little linear command turns toward its target until its turn rate drops to the
+    threshold, then stands.
 
-    An unsnapped heading-mode command can still drift back across the threshold as its turn
-    settles - that is true of mjlab too and is not what this fixes.
+    unitree_rl_mjlab snaps only when it draws a command (`unitree_rl_mjlab/.../mdp/
+    velocity_command.py:77`), using a turn rate that heading mode overwrites on the next step,
+    so there a heading-mode command can settle below the threshold without being zeroed.
     """
 
     cfg: UniformLevelVelocityCommandCfg
 
-    def _resample_command(self, env_ids):
-        super()._resample_command(env_ids)
-        keep = torch.norm(self.vel_command_b[env_ids], dim=1) > self.cfg.zero_command_threshold
-        self.vel_command_b[env_ids] *= keep.unsqueeze(1)
-        self.is_standing_env[env_ids] |= ~keep
+    def _update_command(self):
+        super()._update_command()
+        keep = torch.norm(self.vel_command_b, dim=1) > self.cfg.zero_command_threshold
+        self.vel_command_b *= keep.unsqueeze(1)
 
 
 @configclass
@@ -53,9 +53,8 @@ class UniformLevelVelocityCommandCfg(UniformVelocityCommandCfg):
     into deploy.yaml as the clamp policy_node applies to /cmd_vel."""
 
     zero_command_threshold: float = 0.0
-    """Draws whose 3-norm is at or below this are snapped to exactly zero, and the robot stands
-    until its next draw. Set it equal to the command_threshold the gait/foot/pose reward terms
-    gate on - 0.1 for H2.
+    """Commands whose 3-norm is at or below this are set to exactly zero, checked every step.
+    Set it equal to the command_threshold the gait/foot/pose reward terms gate on - 0.1 for H2.
 
     Defaults to 0.0 (no-op) because g1, go2 and h1 share this cfg class and none of them asked
     for the behaviour change; opt in per robot."""

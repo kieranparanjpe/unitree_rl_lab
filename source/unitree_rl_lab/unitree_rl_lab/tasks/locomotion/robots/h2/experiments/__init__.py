@@ -15,6 +15,7 @@ EXPERIMENTS = {
     "Unitree-H2-Exp2-GaitRewardPhase": "exp2_gait_reward_phase",
     "Unitree-H2-Exp4-Heading0": "exp4_heading_0",
     "Unitree-H2-Exp4-Heading100": "exp4_heading_100",
+    "Unitree-H2-Exp7-DomainRandomization": "exp7_domain_randomization",
 }
 
 for task_name, module_name in EXPERIMENTS.items():

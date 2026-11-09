@@ -151,16 +151,6 @@ class EventCfg:
     )
 
     # reset
-    # Ranges are zero, so this does nothing; kept to match 09-17-v2.
-    base_external_force_torque = EventTerm(
-        func=mdp.apply_external_force_torque,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
-            "force_range": (0.0, 0.0),
-            "torque_range": (-0.0, 0.0),
-        },
-    )
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
@@ -176,7 +166,9 @@ class EventCfg:
             },
         },
     )
-    # The velocity range scales the default joint velocity, which is 0, so it has no effect.
+    # Required: Articulation.reset() does not restore joint state, so this is what puts the joints
+    # back in the default pose. Position scale (1, 1) means no noise; the velocity range scales the
+    # default joint velocity, which is 0, so it has no effect.
     reset_robot_joints = EventTerm(
         func=mdp.reset_joints_by_scale,
         mode="reset",
