@@ -307,6 +307,35 @@ def variable_posture(
     return torch.exp(-torch.mean(torch.square(error) / torch.square(std), dim=1))
 
 
+def variable_posture_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    std_standing: dict[str, float],
+    std_walking: dict[str, float],
+    std_running: dict[str, float],
+    walking_threshold: float = 0.1,
+    running_threshold: float = 1.5,
+) -> torch.Tensor:
+    """`1 - variable_posture`: 0 at the default pose, up to 1 far from it. Use a negative weight.
+
+    Ranks poses exactly like `variable_posture` with a positive weight, minus a constant per
+    step, so it doesn't add to what staying alive is worth (like the joint_deviation penalties).
+    A negative weight on `variable_posture` itself would instead push the robot away from the
+    default pose.
+    """
+    return 1.0 - variable_posture(
+        env,
+        asset_cfg,
+        command_name,
+        std_standing,
+        std_walking,
+        std_running,
+        walking_threshold,
+        running_threshold,
+    )
+
+
 def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]) -> torch.Tensor:
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
