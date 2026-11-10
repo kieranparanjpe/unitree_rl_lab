@@ -19,6 +19,7 @@ EXPERIMENTS = {
     "Unitree-H2-Exp7-DomainRandomization": "exp7_domain_randomization",
     "Unitree-H2-Exp10-Pose": "exp10_pose",
     "Unitree-H2-Exp11-Alive2": "exp11_alive_2",
+    "Unitree-H2-Exp12-AngStd1": "exp12_ang_std_1",
 }
 
 for task_name, module_name in EXPERIMENTS.items():
