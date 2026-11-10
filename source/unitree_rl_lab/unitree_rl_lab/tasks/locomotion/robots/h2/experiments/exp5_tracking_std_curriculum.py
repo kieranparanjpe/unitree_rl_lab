@@ -1,9 +1,9 @@
 """Experiment 5: baseline + a tracking std curriculum.
 
-Each tracking term's paid std shrinks from 0.5 by 0.05 (down to 0.05) whenever that term
-averages above 0.8 of its weight, checked once per episode length. Linear and turn shrink
-separately. The speed and turn curricula keep scoring at the fixed std of 0.5, so they grow
-exactly as in the baseline.
+Each tracking term's paid std shrinks from its baseline value (0.5 linear, 1.0 turn) by 0.05
+(down to 0.05) whenever that term averages above 0.8 of its weight, checked once per episode
+length. Linear and turn shrink separately. The speed and turn curricula keep scoring at the
+baseline's fixed std (0.5 linear, 1.0 turn), so they grow exactly as in the baseline.
 """
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
