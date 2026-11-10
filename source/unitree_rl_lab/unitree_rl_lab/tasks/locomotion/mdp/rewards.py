@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 try:
@@ -8,10 +9,11 @@ try:
 except ImportError:
     from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse
 from isaaclab.assets import Articulation, RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.envs.mdp import track_ang_vel_z_exp
+from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.string import resolve_matching_names
-from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide
+from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide, track_lin_vel_xy_yaw_frame_exp
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -323,3 +325,54 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+"""
+Velocity tracking with a fixed-std episode total.
+"""
+
+
+class track_lin_vel_xy_yaw_frame_exp_with_fixed_std_sum(ManagerTermBase):
+    """`track_lin_vel_xy_yaw_frame_exp` at `std`, plus each robot's episode total of what it would
+    have paid at `fixed_std`.
+
+    `tracking_std_levels` shrinks `std`; `lin_vel_cmd_levels_fixed_std` scores on
+    `fixed_std_episode_sum`, so the speed ranges keep growing while the paid reward gets stricter.
+    With `std == fixed_std` this pays exactly what the stock term pays. The reward manager skips
+    terms whose weight is 0, so at weight 0 the total stays 0.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.fixed_std_episode_sum = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self.fixed_std_episode_sum[env_ids] = 0.0
+
+    def __call__(self, env: ManagerBasedRLEnv, std: float, fixed_std: float, command_name: str) -> torch.Tensor:
+        self.fixed_std_episode_sum += (
+            track_lin_vel_xy_yaw_frame_exp(env, std=fixed_std, command_name=command_name) * env.step_dt
+        )
+        return track_lin_vel_xy_yaw_frame_exp(env, std=std, command_name=command_name)
+
+
+class track_ang_vel_z_exp_with_fixed_std_sum(ManagerTermBase):
+    """`track_ang_vel_z_exp` at `std`, plus each robot's episode total of what it would have paid
+    at `fixed_std`. The turn counterpart of `track_lin_vel_xy_yaw_frame_exp_with_fixed_std_sum`,
+    read by `ang_vel_cmd_levels_fixed_std`.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.fixed_std_episode_sum = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self.fixed_std_episode_sum[env_ids] = 0.0
+
+    def __call__(self, env: ManagerBasedRLEnv, std: float, fixed_std: float, command_name: str) -> torch.Tensor:
+        self.fixed_std_episode_sum += track_ang_vel_z_exp(env, std=fixed_std, command_name=command_name) * env.step_dt
+        return track_ang_vel_z_exp(env, std=std, command_name=command_name)
