@@ -120,9 +120,11 @@ def tracking_std_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str,
+    threshold: float = 0.8,
 ) -> torch.Tensor:
     """Shrink a tracking term's `std` by 0.05, down to 0.05, on the speed curricula's schedule,
-    whenever the reward it actually paid averages above 0.8 of its weight. Never loosens.
+    whenever the reward it actually paid averages above `threshold` (0.8) of its weight. Never
+    loosens.
 
     Pair it with the `_fixed_std` speed curricula: the plain ones score on the paid reward, which
     this makes stricter, so they would stop widening the ranges."""
@@ -130,7 +132,7 @@ def tracking_std_levels(
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        if reward > reward_term.weight * threshold:
             reward_term.params["std"] = max(round(reward_term.params["std"] - 0.05, 2), 0.05)
             env.reward_manager.set_term_cfg(reward_term_name, reward_term)
 
