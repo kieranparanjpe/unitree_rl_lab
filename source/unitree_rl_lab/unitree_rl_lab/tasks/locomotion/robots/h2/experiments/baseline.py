@@ -9,12 +9,12 @@ Differences from ../velocity_env_cfg.py:
   +-1.0 through the new turn curriculum; heading mode for 50% of robots instead of 100%.
 - Observations: no gait_phase (policy and critic).
 - Rewards: no `pose` (variable_posture) and no `gait`; G1's joint_deviation penalties plus a head
-  group instead; turn tracking at weight 0.5 with std 1.0 (linear tracking keeps 0.5). Both
+  group instead; turn tracking at weight 0.5 with std 0.5 (the same std as linear tracking). Both
   tracking terms are the `_with_fixed_std_sum` versions: same reward, plus the fixed-std episode
   total the speed and turn curricula score on.
-- Curriculum: turn curriculum added. Both use the `_fixed_std` versions, which make the same
-  decisions as lin/ang_vel_cmd_levels while each tracking std equals its fixed std (they only
-  differ in exp5).
+- Curriculum: turn curriculum added, with its bar at 0.4 instead of 0.8. Both use the
+  `_fixed_std` versions, which make the same decisions as lin/ang_vel_cmd_levels with the same
+  bar while each tracking std equals its fixed std (they only differ in exp5).
 Everything else is copied unchanged.
 """
 
@@ -276,10 +276,11 @@ class ObservationsCfg:
 
 @configclass
 class RewardsCfg:
-    # -- tracking: linear std 0.5 (G1/H1), turn std 1.0; each command axis is worth 0.5. `std` is
+    # -- tracking: linear and turn std 0.5 (G1/H1); each command axis is worth 0.5. `std` is
     # what is paid (exp5's curriculum shrinks it); `fixed_std` is what the speed curricula score
-    # on. Turn was 0.5 until exp12: there the yaw reward never averaged above 0.8, so the turn-rate
-    # limit stayed at 0.1 for the whole run.
+    # on. At turn std 0.5 the yaw reward never averages above 0.8, so the turn curriculum's bar is
+    # 0.4 (CurriculumCfg). exp12's turn std 1.0 also let the turn limit grow, but a robot standing
+    # still then earned most of a turn command's reward, so it rarely turned in place (exp14).
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp_with_fixed_std_sum,
         weight=1.0,
@@ -288,7 +289,7 @@ class RewardsCfg:
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp_with_fixed_std_sum,
         weight=0.5,
-        params={"command_name": "base_velocity", "std": 1.0, "fixed_std": 1.0},
+        params={"command_name": "base_velocity", "std": 0.5, "fixed_std": 0.5},
     )
 
     # -- survival. H2's foot penalties pay nothing for standing, so falling has to be made
@@ -388,9 +389,10 @@ class CurriculumCfg:
     # Flat ground everywhere, so this only changes which flat tile a robot starts on.
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
     # Each widens its ranges by 0.1 per side, once per episode length, when the matching
-    # tracking term, scored at its fixed std (0.5 linear, 1.0 turn), averages above 0.8 per second.
+    # tracking term, scored at its fixed std (0.5), averages above its bar per second: 0.8 linear,
+    # 0.4 turn. A turn score of 0.4 at std 0.5 means about the same error as 0.8 at std 1.0 (exp14).
     lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels_fixed_std)
-    ang_vel_cmd_levels = CurrTerm(func=mdp.ang_vel_cmd_levels_fixed_std)
+    ang_vel_cmd_levels = CurrTerm(func=mdp.ang_vel_cmd_levels_fixed_std, params={"threshold": 0.4})
 
 
 @configclass

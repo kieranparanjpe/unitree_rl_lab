@@ -98,16 +98,19 @@ def ang_vel_cmd_levels_fixed_std(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str = "track_ang_vel_z",
+    threshold: float = 0.8,
 ) -> torch.Tensor:
     """`ang_vel_cmd_levels`, scored at the tracking term's `fixed_std`; see
-    `lin_vel_cmd_levels_fixed_std`. The term must be `track_ang_vel_z_exp_with_fixed_std_sum`."""
+    `lin_vel_cmd_levels_fixed_std`. The term must be `track_ang_vel_z_exp_with_fixed_std_sum`.
+    The turn ranges widen when the score averages above `threshold` (0.8, as in
+    ang_vel_cmd_levels)."""
     ranges = env.command_manager.get_term("base_velocity").cfg.ranges
 
     reward_term = env.reward_manager.get_term_cfg(reward_term_name)
     score = torch.mean(reward_term.func.fixed_std_episode_sum[env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if score > 0.8:
+        if score > threshold:
             _widen_ang_vel_ranges(env)
 
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)

@@ -21,6 +21,7 @@ EXPERIMENTS = {
     "Unitree-H2-Exp10-Pose": "exp10_pose",
     "Unitree-H2-Exp11-Alive2": "exp11_alive_2",
     "Unitree-H2-Exp12-AngStd1": "exp12_ang_std_1",
+    "Unitree-H2-Exp14-AngStd05Bar04": "exp14_ang_std_05_bar_04",
 }
 
 for task_name, module_name in EXPERIMENTS.items():
