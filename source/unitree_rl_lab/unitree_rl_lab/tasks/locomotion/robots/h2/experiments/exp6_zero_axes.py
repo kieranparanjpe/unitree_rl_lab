@@ -7,8 +7,7 @@ near 0 (about 2% of draws). Exp12's Gazebo eval turned in place poorly (right sp
 commanded rate, half_square's 0.5 rad/s turns at 33%) while its walking turns were fine.
 Result (2026-11-11, against the sigma_ang 1.0 baseline): in-place turning got worse, so it was
 not added to the baseline; see EXPERIMENTS.md. It runs again against the current baseline
-(sigma_ang 0.5, turn bar 0.4), aimed at 0.5 rad/s turns from standing, which exp14 still doesn't
-start.
+(sigma_ang 0.5, turn bar 0.4) as an ordinary experiment, reported and not added.
 """
 
 from isaaclab.utils import configclass

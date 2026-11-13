@@ -4,8 +4,11 @@ import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from isaaclab.managers import ManagerTermBase
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.managers import CurriculumTermCfg
 
 
 def _widen_lin_vel_ranges(env: ManagerBasedRLEnv) -> None:
@@ -137,3 +140,82 @@ def tracking_std_levels(
             env.reward_manager.set_term_cfg(reward_term_name, reward_term)
 
     return torch.tensor(reward_term.params["std"], device=env.device)
+
+
+class _ScoreSinceLastCheck(ManagerTermBase):
+    """Base for curricula that, once per episode length, judge the mean score of every robot whose
+    episode ended since the previous check.
+
+    The functions above judge only the robots resetting on the check step itself. Once robots stop
+    falling, each one resets on a fixed cycle of one episode length, so the same few robots (about
+    4 of 4096, sometimes none) decide every later check.
+    """
+
+    def __init__(self, cfg: CurriculumTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.score_sum = torch.zeros((), device=env.device)
+        self.count = 0
+        self.last_check = 0
+
+    def _add_and_check(self, env: ManagerBasedRLEnv, scores: torch.Tensor) -> torch.Tensor | None:
+        """Add the resetting robots' scores. Once an episode length has passed since the last check,
+        return the mean score since then and start over; otherwise return None."""
+        self.score_sum += scores.sum()
+        self.count += scores.numel()
+        if env.common_step_counter - self.last_check < env.max_episode_length:
+            return None
+        mean = self.score_sum / self.count
+        self.score_sum.zero_()
+        self.count = 0
+        self.last_check = env.common_step_counter
+        return mean
+
+
+class tracking_std_levels_all_resets(_ScoreSinceLastCheck):
+    """`tracking_std_levels`, judged on every robot whose episode ended since the last check."""
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, env_ids: Sequence[int], reward_term_name: str, threshold: float = 0.8
+    ) -> torch.Tensor:
+        reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+        scores = env.reward_manager._episode_sums[reward_term_name][env_ids] / env.max_episode_length_s
+        mean = self._add_and_check(env, scores)
+        if mean is not None and mean > reward_term.weight * threshold:
+            reward_term.params["std"] = max(round(reward_term.params["std"] - 0.05, 2), 0.05)
+            env.reward_manager.set_term_cfg(reward_term_name, reward_term)
+
+        return torch.tensor(reward_term.params["std"], device=env.device)
+
+
+class lin_vel_cmd_levels_fixed_std_all_resets(_ScoreSinceLastCheck):
+    """`lin_vel_cmd_levels_fixed_std`, judged on every robot whose episode ended since the last check."""
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, env_ids: Sequence[int], reward_term_name: str = "track_lin_vel_xy"
+    ) -> torch.Tensor:
+        reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+        scores = reward_term.func.fixed_std_episode_sum[env_ids] / env.max_episode_length_s
+        mean = self._add_and_check(env, scores)
+        if mean is not None and mean > 0.8:
+            _widen_lin_vel_ranges(env)
+
+        return torch.tensor(env.command_manager.get_term("base_velocity").cfg.ranges.lin_vel_x[1], device=env.device)
+
+
+class ang_vel_cmd_levels_fixed_std_all_resets(_ScoreSinceLastCheck):
+    """`ang_vel_cmd_levels_fixed_std`, judged on every robot whose episode ended since the last check."""
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        reward_term_name: str = "track_ang_vel_z",
+        threshold: float = 0.8,
+    ) -> torch.Tensor:
+        reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+        scores = reward_term.func.fixed_std_episode_sum[env_ids] / env.max_episode_length_s
+        mean = self._add_and_check(env, scores)
+        if mean is not None and mean > threshold:
+            _widen_ang_vel_ranges(env)
+
+        return torch.tensor(env.command_manager.get_term("base_velocity").cfg.ranges.ang_vel_z[1], device=env.device)

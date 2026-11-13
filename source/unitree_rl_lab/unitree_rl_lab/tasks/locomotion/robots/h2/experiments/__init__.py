@@ -16,6 +16,8 @@ EXPERIMENTS = {
     "Unitree-H2-Exp4-Heading0": "exp4_heading_0",
     "Unitree-H2-Exp4-Heading100": "exp4_heading_100",
     "Unitree-H2-Exp5-TrackingStdCurriculum": "exp5_tracking_std_curriculum",
+    "Unitree-H2-Exp5a-StdCurriculumAllResets": "exp5a_std_curriculum_all_resets",
+    "Unitree-H2-Exp5b-AllCurriculaAllResets": "exp5b_all_curricula_all_resets",
     "Unitree-H2-Exp6-ZeroAxes": "exp6_zero_axes",
     "Unitree-H2-Exp7-DomainRandomization": "exp7_domain_randomization",
     "Unitree-H2-Exp10-Pose": "exp10_pose",
