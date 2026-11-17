@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -405,3 +406,45 @@ class track_ang_vel_z_exp_with_fixed_std_sum(ManagerTermBase):
     def __call__(self, env: ManagerBasedRLEnv, std: float, fixed_std: float, command_name: str) -> torch.Tensor:
         self.fixed_std_episode_sum += track_ang_vel_z_exp(env, std=fixed_std, command_name=command_name) * env.step_dt
         return track_ang_vel_z_exp(env, std=std, command_name=command_name)
+
+
+class track_ang_vel_z_filtered_exp_with_fixed_std_sum(ManagerTermBase):
+    """`track_ang_vel_z_exp_with_fixed_std_sum` on a smoothed turn-rate error (experiment 13).
+
+    The error cz - wz goes through an exponential moving average with time constant `tau`, and the
+    reward is exp(-e_smooth^2 / std^2); `fixed_std_episode_sum` uses the same smoothed error, so
+    `ang_vel_cmd_levels_fixed_std` scores it unchanged. The filter starts at 0 when an episode
+    resets and runs on through command changes. `filtered_turn_error` (observations.py) gives its
+    state to the critic. Logs each ended episode's mean |e_smooth| per step as
+    Metrics/filtered_error_vel_yaw.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.filtered_error = torch.zeros(env.num_envs, device=env.device)
+        self.fixed_std_episode_sum = torch.zeros(env.num_envs, device=env.device)
+        self.abs_error_episode_sum = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        # _reset_idx creates extras["log"] before resetting the managers and zeroes
+        # episode_length_buf after them, so both are valid here.
+        if "log" in self._env.extras:
+            steps = self._env.episode_length_buf[env_ids].clamp(min=1)
+            self._env.extras["log"]["Metrics/filtered_error_vel_yaw"] = torch.mean(
+                self.abs_error_episode_sum[env_ids] / steps
+            )
+        self.filtered_error[env_ids] = 0.0
+        self.fixed_std_episode_sum[env_ids] = 0.0
+        self.abs_error_episode_sum[env_ids] = 0.0
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, std: float, fixed_std: float, command_name: str, tau: float
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene["robot"]
+        error = env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2]
+        self.filtered_error += (1.0 - math.exp(-env.step_dt / tau)) * (error - self.filtered_error)
+        self.abs_error_episode_sum += self.filtered_error.abs()
+        self.fixed_std_episode_sum += torch.exp(-self.filtered_error.square() / fixed_std**2) * env.step_dt
+        return torch.exp(-self.filtered_error.square() / std**2)

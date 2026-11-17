@@ -37,3 +37,16 @@ def gait_phase(
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
         phase = torch.where((cmd_norm > command_threshold).unsqueeze(1), phase, torch.zeros_like(phase))
     return phase
+
+
+def filtered_turn_error(env: ManagerBasedRLEnv, reward_term_name: str = "track_ang_vel_z") -> torch.Tensor:
+    """The smoothed turn-rate error kept by `track_ang_vel_z_filtered_exp_with_fixed_std_sum`, for the
+    critic: that reward depends on about the last 0.5 s, which the 0.1 s observation history doesn't
+    cover. Critic only, so there is no C++ counterpart.
+
+    Zeros while the env is being built: the observation manager evaluates every term to size it
+    before the reward manager exists.
+    """
+    if not hasattr(env, "reward_manager"):
+        return torch.zeros(env.num_envs, 1, device=env.device)
+    return env.reward_manager.get_term_cfg(reward_term_name).func.filtered_error.unsqueeze(-1)
