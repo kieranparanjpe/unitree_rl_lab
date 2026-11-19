@@ -29,6 +29,7 @@ EXPERIMENTS = {
     "Unitree-H2-Exp16a-FineTracking": "exp16a_fine_tracking",
     "Unitree-H2-Exp17-MjlabMirror": "exp17_mjlab_mirror",
     "Unitree-H2-Exp18-H1Setup": "exp18_h1_setup",
+    "Unitree-H2-Exp18b-H1SetupG1Clearance": "exp18b_h1_setup_g1_clearance",
 }
 
 # tasks whose PPO settings differ from PPO_CFG -> class in that task's module
