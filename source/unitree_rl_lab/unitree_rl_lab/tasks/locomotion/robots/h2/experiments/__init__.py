@@ -27,6 +27,13 @@ EXPERIMENTS = {
     "Unitree-H2-Exp13-FilteredTurnReward": "exp13_filtered_turn_reward",
     "Unitree-H2-Exp14-AngStd05Bar04": "exp14_ang_std_05_bar_04",
     "Unitree-H2-Exp16a-FineTracking": "exp16a_fine_tracking",
+    "Unitree-H2-Exp17-MjlabMirror": "exp17_mjlab_mirror",
+    "Unitree-H2-Exp18-H1Setup": "exp18_h1_setup",
+}
+
+# tasks whose PPO settings differ from PPO_CFG -> class in that task's module
+PPO_OVERRIDES = {
+    "Unitree-H2-Exp17-MjlabMirror": "PPORunnerCfg",
 }
 
 for task_name, module_name in EXPERIMENTS.items():
@@ -37,6 +44,8 @@ for task_name, module_name in EXPERIMENTS.items():
         kwargs={
             "env_cfg_entry_point": f"{__name__}.{module_name}:EnvCfg",
             "play_env_cfg_entry_point": f"{__name__}.{module_name}:PlayEnvCfg",
-            "rsl_rl_cfg_entry_point": PPO_CFG,
+            "rsl_rl_cfg_entry_point": (
+                f"{__name__}.{module_name}:{PPO_OVERRIDES[task_name]}" if task_name in PPO_OVERRIDES else PPO_CFG
+            ),
         },
     )
